@@ -1,1 +1,443 @@
+include 'f_ashpanel.f90'
+
+module test_powell
+  implicit none
+  integer, parameter :: singlep = kind(1.0), doublep = kind(1.0d0)
+  integer, parameter :: fp = doublep
+  real(fp) :: rb=1.02d0, ralo=0.9d0, rahi=1.22d0
+  real(fp) :: Plo=0.5d0, phi=0.5d0
+  real(fp) :: beta = 0.96d0, gamma = 2.00d0
+  integer, parameter :: corrSY=0   ! corr(stock,income), either 0 or 1
+  integer, parameter :: nA=300,  nB=300
+  integer, parameter :: nY=3, nR=2, nT=20
+  real(fp), parameter :: Amin=0.0, Amax=80.0, Bmin=0.0,  Bmax=80.0
+  real(fp), parameter :: entrycost=0.00, adjcost=0.00d0, excost=0.0
+  real(fp) :: income,Yvec(nY),Yprob(nY)   ! current incomes, future income and pro
+  real(fp),dimension(nY,2):: Rtranmat ! transition prob. of return that depends on income state
+  real(fp) :: assetA(nA), assetB(nB)
+  real(fp) :: assetA_now, assetB_now, assetAfuture 
+  real(fp) :: alpha0, alpha1
+  real(fp) :: beta0, beta1
+  real(fp),dimension(nB,nA,nY):: Vfunc
+  real(fp),dimension(nB,nA,nY,nT):: Adec,Bdec
+  integer,dimension(nB,nA,nY,nT):: Adjdec  !adjustment decision
+  
+ 
+contains
+  function value(assetvec, n)
+    implicit none
+    real(fp), intent(in) :: assetvec(n)
+    integer, intent(in) :: n
+    real(fp):: valuelo,valuehi,value0,value, area, assetB2cal,assetA2cal,consumpt
+    real(fp):: plonew,phinew
+    integer:: k
+
+
+    if (n==2) then             ! choose both bond and stock 
+       assetB2cal=assetvec(1)
+       assetA2cal=assetvec(2)
+       if (assetA_now.le.0) then  ! non-participants
+          consumpt=income+assetA_now+assetB_now-assetA2cal-assetB2cal-entrycost
+             !costly to enter
+       else                       ! participants
+          consumpt=income+assetA_now+assetB_now-assetA2cal-assetB2cal-adjcost
+             !costly to adjust stock
+       endif
+    elseif (n==1) then         ! choose bond only, stock not adjusted
+       assetB2cal=assetvec(1)
+       assetA2cal=assetAfuture
+       if (assetAfuture==0) then
+          consumpt = income+assetA_now+assetB_now-assetA2cal-assetB2cal-excost
+       else 
+          consumpt = income+assetA_now+assetB_now-assetA2cal-assetB2cal
+       endif
+    endif
+
+    if (assetA2cal<assetA(1).or.assetB2cal<assetB(1)) then
+       value = 70000000.0
+       return
+    endif
+    if (assetA2cal>assetA(nA).or.assetB2cal>assetB(nB)) then
+       value = 80000000.0
+       return
+    endif
+    if (consumpt<0.01) then
+       value = 90000000.0
+       return
+    endif
+
+    value0 = 0
+    do k=1,nY
+       call interp2D(assetB2cal*rb,assetA2cal*ralo,valuelo,&
+            assetB,AssetA,Vfunc(:,:,k),nB,nA)    
+       call interp2D(assetB2cal*rb,assetA2cal*rahi,valuehi,&
+            assetB,AssetA,Vfunc(:,:,k),nB,nA)    
+       plonew=Rtranmat(k,1); phinew=Rtranmat(k,2)
+       value0 = value0+Yprob(k)*(plonew*valuelo + phinew*valuehi)    
+    enddo
+    value = - ( util(consumpt)+beta*value0 )
+
+    return
+  end function value
+
+
+  elemental function util(consumpt)
+    implicit none
+    real(fp) :: util
+    real(fp), intent(in) :: consumpt
+    util = consumpt**(1.0d0-gamma)/(1.0d0-gamma)
+    return
+  end function util
+
+
+  subroutine set_grid(gmin, gmax, ng, grid, alpha0, alpha1)
+    implicit none
+    real(fp), intent(in) :: gmin, gmax
+    integer, intent(in) :: ng
+    real(fp), intent(out):: alpha0, alpha1, grid(ng)
+    integer:: i
+    alpha1 = (log(gmax - gmin + 1.0d0))/ng;
+    alpha0 = exp(alpha1) - gmin;
+    do i = 1, ng
+       grid(i) = -alpha0 + exp(alpha1*i);
+    end do
+    grid(1) = gmin;
+    grid(ng) = gmax;
+    return
+  end subroutine set_grid
+
+
+  subroutine  f_Kron(A,n1,n2,B,m1,m2,C)
+    integer:: n1,n2,m1,m2
+    real(fp),intent(in):: A(n1,n2), B(m1,m2)
+    real(fp),intent(out)::C(n1*m1,n2*m2)
+    integer:: i,j
+    do i=1,n1
+       do j=1,n2
+          C(m1*(i-1)+1:m1*i,m2*(j-1)+1:m2*j) = A(i,j)*B
+       enddo
+    enddo
+  end subroutine f_Kron
+
+
+  
+  subroutine interp2D(xinp0, yinp0,zinp, xgrid, ygrid,zfunc, nx,ny)
+    implicit none
+    !*************************************************************************************
+    ! Piecewise liner interpolation.
+    ! Given input arrays xgrid,ygrid (independent variable) and zfunc (dependent variable),
+    ! both of dimension narray, this routine finds, by linear interpolation, 
+    ! the value of zinp(x=xinp,y=yinp). 
+    ! Array xgrid and ygrid  must be in ascending order.
+    !***************************************************************************************
+    real(fp), intent(out) :: zinp
+    real(fp), intent(in) :: xinp0,yinp0
+    integer, intent(in) :: nx,ny
+    real(fp), intent(in) :: xgrid(nx)
+    real(fp), intent(in) :: ygrid(ny)
+    real(fp), intent(in) :: zfunc(nx,ny)
+    real(fp) :: value_on_grid(4), wgt(4), area,xinp,yinp
+    integer :: i,idx,idy
+!    if (xinp.le.xgrid(1)) then
+!       idx=1
+!    elseif (xinp.ge.xgrid(nx)) then
+!       idx=nx-1
+!    else
+!       do i = 2, nx
+!          if (xgrid(i) > xinp) exit
+!       enddo
+!       idx = i-1
+!    endif
+!    if (yinp.le.ygrid(1)) then
+!       idy=1
+!    elseif (yinp.ge.ygrid(ny)) then
+!       idy=ny-1
+!    else
+!       do i = 2, ny
+!          if (ygrid(i) > yinp) exit
+!       enddo
+!       idy = i-1
+!    endif
+    idx = floor(1.0d0/beta1*log(beta0+xinp0))
+    idy = floor(1.0d0/alpha1*log(alpha0+yinp0))
+    if (idx<1) then
+       xinp=xgrid(1); idx=1
+    elseif (idx.ge.nx) then
+       xinp=xgrid(nx); idx=nx-1
+    else
+       xinp=xinp0
+    endif
+    if (idy<1) then
+       yinp=ygrid(1);  idy=1
+    elseif (idy.ge.ny) then
+       yinp=ygrid(ny); idy=ny-1
+    else
+       yinp=yinp0
+    endif
+    area = (xgrid(idx+1)-xgrid(idx))*(ygrid(idy+1)-ygrid(idy))
+    value_on_grid(1) = zfunc(idx,idy)   
+    value_on_grid(2) = zfunc(idx,idy+1) 
+    value_on_grid(3) = zfunc(idx+1,idy) 
+    value_on_grid(4) = zfunc(idx+1,idy+1)
+    wgt(1) = (xgrid(idx+1)-xinp)*(ygrid(idy+1)-yinp)/area
+    wgt(2) = (xgrid(idx+1)-xinp)*(yinp-ygrid(idy))/area
+    wgt(3) = (xinp-xgrid(idx))*(ygrid(idy+1)-yinp)/area
+    wgt(4) = (xinp-xgrid(idx))*(yinp-ygrid(idy))/area
+    zinp = wgt(1)*value_on_grid(1) + wgt(2)*value_on_grid(2) &   
+         + wgt(3)*value_on_grid(3) + wgt(4)*value_on_grid(4)
+    return
+  end subroutine interp2D
+
+  
+  subroutine oneassetmax(assetA,assetB,aprime,bprime,valueopt)
+     implicit none
+     real(fp), intent(out) :: bprime, valueopt
+     real(fp),dimension(nB,1,nY) :: Vfuturelo, Vfuturehi
+     real(fp),dimension(nB):: Vfuture
+     real(fp), intent(in) :: assetA(nA),assetB(nB),aprime
+     real(fp):: wt1,wt2,aprimelo,aprimehi,plonew,phinew,consumpt(nB),utily(nB)
+     integer:: ialo,iahi,j,loc1(1),k
+
+     if (aprime==0) then  !exiting stock market
+        consumpt = income+assetB_now-assetB-excost
+     else 
+        consumpt = income+assetB_now-assetB
+     endif
+     aprimelo=aprime*ralo;
+     ialo = floor(1.0d0/alpha1*log(alpha0+aprimelo))
+     aprimehi=aprime*rahi
+     iahi = floor(1.0d0/alpha1*log(alpha0+aprimehi))
+     if (ialo<1) then
+        Vfuturelo(:,1,:)=Vfunc(:,1,:)
+        Vfuturehi(:,1,:)=Vfunc(:,1,:)
+     elseif (iahi.ge.nA) then
+        Vfuturelo(:,1,:)=Vfunc(:,nA,:)
+        Vfuturehi(:,1,:)=Vfunc(:,nA,:)
+     else
+        wt1=(assetA(ialo+1)-aprimelo)/(assetA(ialo+1)-assetA(ialo))
+        wt2=(aprimelo-assetA(ialo))/(assetA(ialo+1)-assetA(ialo))
+        Vfuturelo(:,1,:)=wt1*Vfunc(:,ialo,:)+wt2*Vfunc(:,ialo+1,:)
+        wt1=(assetA(iahi+1)-aprimehi)/(assetA(iahi+1)-assetA(iahi))
+        wt2=(aprimehi-assetA(iahi))/(assetA(iahi+1)-assetA(iahi))
+        Vfuturehi(:,1,:)=wt1*Vfunc(:,iahi,:)+wt2*Vfunc(:,iahi+1,:)
+     endif
+     Vfuture = 0
+     do k=1,nY
+        plonew=Rtranmat(k,1); phinew=Rtranmat(k,2)
+        Vfuture = Vfuture+Yprob(k)*(plonew*Vfuturelo(:,1,k) + phinew*Vfuturehi(:,1,k))    
+     enddo
+     utily =  consumpt**(1.0d0-gamma)/(1.0d0-gamma)
+     where (consumpt<0.001) 
+        utily = -900000000
+     end where
+     loc1 = maxloc( utily+beta*Vfuture )
+     j = loc1(1)
+     bprime = assetB(j)
+     valueopt=utily(j)+beta*Vfuture(j) 
+
+     if (valueopt.ge.0) then
+        print*,' positive value!!'
+     endif
+
+     return
+   end subroutine oneassetmax
+  
+  
+end module test_powell
+
+
+program main
+  use test_powell
+  implicit none
+  integer, parameter :: nvars=2, nnadj=1
+  integer, parameter :: nHH=5000  !simulate nHH households
+  real(fp) :: startpt(nvars), endpt(nvars), vadj
+  real(fp) :: startone(nnadj), endna(nnadj),endexit(nnadj), vnadj, vexit,bexit,bna
+  real(fp) :: eps, rho
+  integer, external :: hooke
+  real(fp),dimension(nB,nA,nY):: Vfuncnew
+  real(fp),dimension(nY,nY):: Ytran        !transition prob. of income
+  real(fp),dimension(nR,nR):: Rtran        !transition prob. of stock return
+  real(fp),dimension(nY*nR,nY*nR):: YRtran !transition prob. of income and stock return
+  real(fp):: YRprobvec(nY*nR), Returnvec(nR), Bprime,Aprime,countp
+  integer:: YRstate(nHH,nT)         !randomly draw states in income*return space
+  real(fp),dimension(nHH,nT)::panelA,panelB,panelshare,panelpart
+  integer:: paneladj(nHH,nT)
+  real(fp):: A_crosssection(nHH)
+  real(fp),dimension(nT):: Aprofile,Bprofile,shareprofile,partprofile,adjprofile
+  integer:: Yind(nY*nR),Rind(nY*nR),idxA,idxB
+  integer :: i, j, k, t, it,iyr,iy,ir,itermax,idB,idA
+  real(fp) :: start_time, stop_time
+  call cpu_time(start_time)
+
+! set up grids
+  call set_grid(Amin, Amax, nA, assetA, alpha0, alpha1)
+  call set_grid(Bmin, Bmax, nB, assetB, beta0, beta1)
+
+
+! income states and the transition prob.
+  Yvec = (/0.4, 1.0, 1.58/)
+  Ytran(1,:) = (/0.85, 0.1, 0.05/)
+  Ytran(2,:) = (/0.1, 0.8, 0.1/)
+  Ytran(3,:) = (/0.05, 0.1, 0.85/)
+! transition prob. of return that depends on income state
+  if (corrSY==0) then
+     do k=1,nY
+        Rtranmat(k,:)=(/plo,phi/)
+     enddo
+  else
+     Rtranmat(1,:)=(/plo+0.2,phi-0.2/)
+     Rtranmat(2,:)=(/plo,phi/)
+     Rtranmat(3,:)=(/plo-0.2,phi+0.2/)
+  endif
+
+!Y*Rspace (/1,2,3,4,5,6/) corresponding to the following:
+  Yind  = (/1,1,2,2,3,3/) 
+  Rind  = (/1,2,1,2,1,2/)
+! transition prob. for income*return space
+  do k=1,nY
+     call f_Kron(Ytran(k,:),1,nY,Rtranmat(k,:),1,nR,YRprobvec)
+     YRtran( (k-1)*nR+1,:) = YRprobvec
+     YRtran(  k*nR,:)      = YRprobvec
+   enddo
+       
+! Backward induction
+  itermax = 5000
+  rho = 0.96d0   ! 1 / step length
+  eps = 1.0d-5  !  precision
+  
+  do t = nT,1,-1
+     if (t.eq.nT) then
+        Vfunc = 0
+     endif
+     do k=1,nY
+        income = Yvec(k)
+        Yprob = Ytran(k,:)
+        do j = 1,nB
+           do i = 1,nA
+              assetB_now = assetB(j)
+              assetA_now = assetA(i)
+            ! case (1), adjust both stock and bond account
+              startpt(1)=assetB_now;   startpt(2)=assetA_now
+              it = hooke(nvars, startpt, endpt, rho, eps, itermax, value)                      
+              vadj=-value(endpt,nvars)
+            ! case (2), adjust only bond account
+!              aprime = assetA_now
+!              call oneassetmax(assetA,assetB,aprime,bna,vnadj)
+!              endna = bna
+              startone=assetB_now
+              assetAfuture = assetA_now
+              it = hooke(nnadj, startone, endna, rho, eps, itermax, value)  
+              vnadj=-value(endna,nnadj)
+            ! case (3), exit the stock market  
+!              aprime = 0.0
+!              call oneassetmax(assetA,assetB,aprime,bexit,vexit)
+!              endexit=bexit
+              startone=assetB_now
+              assetAfuture = 0.0
+              it = hooke(nnadj, startone, endexit, rho, eps, itermax, value)  
+              vexit=-value(endexit,nnadj)              
+
+            ! compare (1) & (2) & (3)
+              if (vadj.gt.vnadj.and.vadj.gt.vexit) then
+                 Vfuncnew(j,i,k) = vadj           
+                 Bdec(j,i,k,t)=endpt(1)
+                 Adec(j,i,k,t)=endpt(2)
+                 Adjdec(j,i,k,t)=1
+              elseif (vnadj.gt.vadj.and.vnadj.gt.vexit) then
+                 Vfuncnew(j,i,k) = vnadj           
+                 Bdec(j,i,k,t)=endna(1)
+                 Adec(j,i,k,t)=assetA_now
+                 Adjdec(j,i,k,t)=0
+              else
+                 Vfuncnew(j,i,k) = vexit
+                 Bdec(j,i,k,t)=endexit(1)
+                 Adec(j,i,k,t)=0.0
+                 Adjdec(j,i,k,t)=0
+              endif
+           enddo
+        end do
+     end do
+     Vfunc = Vfuncnew
+!     print*,'t=',t
+!     write(*,'(10f9.3)') Bdec(91:100,1,2,t)
+!     write(*,'(10f9.3)') Adec(91:100,1,2,t)
+!     write(*,'(10i9)') Adjdec(91:100,1,2,t)
+!     print*,'maxa=',maxval(Adec),' maxb=',maxval(Bdec) 
+  !   print*,'maxb=',maxval(Bdec(:,:,:,t)),'  minb=',minval(Bdec(:,:,:,t))
+  !   print*,maxloc(Bdec(:,:,:,t)), minloc(Bdec(:,:,:,t))
+  !   print*,'maxa=',maxval(Adec(:,:,:,t)),'  mina=',minval(Adec(:,:,:,t))
+  !   print*,maxloc(Adec(:,:,:,t)), minloc(Adec(:,:,:,t))
+  enddo
+
+
+! simulation
+ call f_ashpanel(YRtran, nY*nR, nHH , nT, 0.0, YRstate)
+ 
+ Returnvec = (/Ralo,Rahi/)
+ do i=1,nHH
+    assetA_now = 0.0
+    assetB_now = 0.0   
+    do t=1,nT
+       iyr = YRstate(i,t)
+       iy  = Yind(iyr)
+       ir  = Rind(iyr)
+       call interp2D(assetB_now,assetA_now,Bprime,&
+         assetB,assetA,Bdec(:,:,iy,t),nB,nA)     
+       call interp2D(assetB_now,assetA_now,Aprime,&
+         assetB,assetA,Adec(:,:,iy,t),nB,nA)     
+       panelB(i,t) = Bprime
+       panelA(i,t) = Aprime
+       if (Aprime+Bprime==0) then
+          panelshare(i,t)=0.0
+       else          
+          panelshare(i,t)=Aprime/(Aprime+Bprime)
+       endif
+       if (Aprime.le.0) then
+          panelpart(i,t)=0.0
+       else
+          panelpart(i,t)=1.0
+       endif
+       
+       idB = floor(1.0d0/beta1*log(beta0+assetB_now))
+       idA = floor(1.0d0/alpha1*log(alpha0+assetA_now))
+       paneladj(i,t)=Adjdec(idB,idA,iy,t)
+
+       assetA_now = Aprime*Returnvec(ir)
+       assetB_now = Bprime*rb
+    enddo
+ enddo
+
+ Bprofile=sum(panelB,dim=1)*(1.0/nHH)
+ Aprofile=sum(panelA,dim=1)*(1.0/nHH)
+ do t=1,nT
+    A_crosssection=panelA(:,t)
+    countp = count(mask=A_crosssection.gt.0)
+    partprofile(t)=(1.0*countp)/nHH
+    if (countp>0) then
+       shareprofile(t)=sum(panelshare(:,t),mask=A_crosssection.gt.0)*(1.0/countp)
+       adjprofile(t) = sum(paneladj(:,t),mask=A_crosssection.gt.0)*(1.0/countp)
+    else 
+       shareprofile(t)=0
+       adjprofile(t)=0
+    endif
+ enddo
+
+ print*,'Bprofile='
+ write(*,'(20f8.3)') Bprofile
+ print*,'Aprofile='
+ write(*,'(20f8.3)') Aprofile
+ print*,'stock share ='
+ write(*,'(20f8.3)') shareprofile
+ print*,'participation rate='
+ write(*,'(20f8.3)') partprofile
+ print*,'adjustment rate='
+ write(*,'(20f8.3)') adjprofile
+
+
+ call cpu_time(stop_time)
+ write(*,*) 'elapse time=', stop_time - start_time
+ stop
+
+end program main
 
