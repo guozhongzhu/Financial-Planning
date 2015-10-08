@@ -4,14 +4,14 @@ module test_powell
   implicit none
   integer, parameter :: singlep = kind(1.0), doublep = kind(1.0d0)
   integer, parameter :: fp = doublep
-  real(fp) :: rb=1.02d0, ralo=0.9d0, rahi=1.22d0
-  real(fp) :: Plo=0.5d0, phi=0.5d0
-  real(fp) :: beta = 0.96d0, gamma = 2.00d0
+  real(fp) :: rb=1.02_fp, ralo=0.9_fp, rahi=1.22_fp
+  real(fp) :: Plo=0.5_fp, phi=0.5_fp
+  real(fp) :: beta = 0.96_fp, gamma = 2.00_fp
   integer, parameter :: corrSY=0   ! corr(stock,income), either 0 or 1
   integer, parameter :: nA=300,  nB=300
   integer, parameter :: nY=3, nR=2, nT=20
-  real(fp), parameter :: Amin=0.0, Amax=80.0, Bmin=0.0,  Bmax=80.0
-  real(fp), parameter :: entrycost=0.00, adjcost=0.00d0, excost=0.0
+  real(fp), parameter :: Amin=0.0_fp, Amax=80.0_fp, Bmin=0.0_fp,  Bmax=80.0_fp
+  real(fp), parameter :: entrycost=0.0_fp, adjcost=0.0_fp, excost=0.0_fp
   real(fp) :: income,Yvec(nY),Yprob(nY)   ! current incomes, future income and pro
   real(fp),dimension(nY,2):: Rtranmat ! transition prob. of return that depends on income state
   real(fp) :: assetA(nA), assetB(nB)
@@ -54,15 +54,15 @@ contains
     endif
 
     if (assetA2cal<assetA(1).or.assetB2cal<assetB(1)) then
-       value = 70000000.0
+       value = 70000000.0_fp
        return
     endif
     if (assetA2cal>assetA(nA).or.assetB2cal>assetB(nB)) then
-       value = 80000000.0
+       value = 80000000.0_fp
        return
     endif
     if (consumpt<0.01) then
-       value = 90000000.0
+       value = 90000000.0_fp
        return
     endif
 
