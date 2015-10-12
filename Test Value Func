@@ -1,0 +1,164 @@
+module test_valuefunc
+  implicit none
+  integer, parameter :: singlep = kind(1.0), doublep = kind(1.0d0)
+  integer, parameter :: fp = doublep
+  real(fp) :: rb=1.02, ralo=0.90, rahi=1.22
+  real(fp) :: Plo=0.5, phi=0.50
+  real(fp),parameter :: beta=0.96, gamma=2.00, theta=0.5
+  real(fp),parameter :: theta11=1-1/theta
+  integer, parameter :: nA=100,  nB=100
+  real(fp), parameter :: Amin=0.0, Amax=20.0, Bmin=0.0,  Bmax=20.0
+  real(fp), parameter :: entrycost=0.01, adjcost=0.01
+  real(fp) :: assetA(nA), assetB(nB)
+  real(fp) :: alpha0, alpha1
+  real(fp) :: beta0, beta1
+
+ 
+contains
+  function Evalue(bondfuture,stockfuture)  !expected value
+    implicit none
+    real(fp), intent(in) :: bondfuture, stockfuture
+    real(fp) :: Vfunc(nB,nA)
+    real(fp) :: valuelo,valuehi,Evalue
+    
+    open(1000,file='Vfunc.dat',form='unformatted')
+    read(1000) Vfunc  !future value as a function of bond and stock
+    close(1000)   
+
+    call interp2D(bondfuture*rb,stockfuture*ralo,valuelo,&
+         assetB,AssetA,Vfunc(:,:),nB,nA)    
+    call interp2D(bondfuture*rb,stockfuture*rahi,valuehi,&
+         assetB,AssetA,Vfunc(:,:),nB,nA)    
+    Evalue = plo*valuelo + phi*valuehi   !expected value
+
+  end function Evalue
+
+
+  elemental function util(consumpt)
+    implicit none
+    real(fp) :: util
+    real(fp), intent(in) :: consumpt
+    util = consumpt**(1.0-gamma)/(1.00-gamma)
+    return
+  end function util
+
+
+  subroutine set_grid(gmin, gmax, ng, grid, alpha0, alpha1)
+    implicit none
+    real(fp), intent(in) :: gmin, gmax
+    integer, intent(in) :: ng
+    real(fp), intent(out):: alpha0, alpha1, grid(ng)
+    integer:: i
+    alpha1 = (log(gmax - gmin + 1.0))/ng;
+    alpha0 = exp(alpha1) - gmin;
+    do i = 1, ng
+       grid(i) = -alpha0 + exp(alpha1*i);
+    end do
+    grid(1) = gmin;
+    grid(ng) = gmax;
+    return
+  end subroutine set_grid
+
+
+  
+  subroutine interp2D(xinp0, yinp0,zinp, xgrid, ygrid,zfunc, nx,ny)
+    implicit none
+    !*************************************************************************************
+    ! Piecewise liner interpolation.
+    ! Given input arrays xgrid,ygrid (independent variable) and zfunc (dependent variable),
+    ! both of dimension narray, this routine finds, by linear interpolation, 
+    ! the value of zinp(x=xinp,y=yinp). 
+    ! Array xgrid and ygrid  must be in ascending order.
+    !***************************************************************************************
+    real(fp), intent(out) :: zinp
+    real(fp), intent(in) :: xinp0,yinp0
+    integer, intent(in) :: nx,ny
+    real(fp), intent(in) :: xgrid(nx)
+    real(fp), intent(in) :: ygrid(ny)
+    real(fp), intent(in) :: zfunc(nx,ny)
+    real(fp) :: value_on_grid(4), wgt(4), area,xinp,yinp
+    integer :: i,idx,idy
+
+    idx = floor(1.0/beta1*log(beta0+xinp0))
+    idy = floor(1.0/alpha1*log(alpha0+yinp0))
+    if (idx<1) then
+       xinp=xgrid(1); idx=1
+    elseif (idx.ge.nx) then
+       xinp=xgrid(nx); idx=nx-1
+    else
+       xinp=xinp0
+    endif
+    if (idy<1) then
+       yinp=ygrid(1);  idy=1
+    elseif (idy.ge.ny) then
+       yinp=ygrid(ny); idy=ny-1
+    else
+       yinp=yinp0
+    endif
+    area = (xgrid(idx+1)-xgrid(idx))*(ygrid(idy+1)-ygrid(idy))
+    value_on_grid(1) = zfunc(idx,idy)   
+    value_on_grid(2) = zfunc(idx,idy+1) 
+    value_on_grid(3) = zfunc(idx+1,idy) 
+    value_on_grid(4) = zfunc(idx+1,idy+1)
+    wgt(1) = (xgrid(idx+1)-xinp)*(ygrid(idy+1)-yinp)/area
+    wgt(2) = (xgrid(idx+1)-xinp)*(yinp-ygrid(idy))/area
+    wgt(3) = (xinp-xgrid(idx))*(ygrid(idy+1)-yinp)/area
+    wgt(4) = (xinp-xgrid(idx))*(yinp-ygrid(idy))/area
+    zinp = wgt(1)*value_on_grid(1) + wgt(2)*value_on_grid(2) &   
+         + wgt(3)*value_on_grid(3) + wgt(4)*value_on_grid(4)
+    return
+  end subroutine interp2D
+
+end module test_valuefunc
+
+
+program main
+  use test_powell
+  real(fp) :: bondnow, stocknow, bondfuture, stockfuture
+  real(fp) :: income, consumpt, value, valuearray(nB,nA)
+  integer  :: i, j, location(2)
+  real(fp) :: start_time, stop_time
+  call cpu_time(start_time)
+
+! set up grids
+  call set_grid(Amin, Amax, nA, assetA, alpha0, alpha1)
+  call set_grid(Bmin, Bmax, nB, assetB, beta0, beta1)
+
+! bondholding now (between Bmin=0 and Bmax=20)
+  bondnow = 10.0
+! stockholding now (between Amin=0 and Amax=20)
+  stocknow = 8.0
+
+! choose bondfuture and stockfuture to maximize:
+!      value = u(consump)+beta*v(bondfuture,stockfuture)
+
+  income=1.0        
+  do j=1,nB
+     do i=1,nA
+        bondfuture = assetB(j)
+        stockfuture = assetA(i)
+        consumpt = income+bondnow+stocknow-bondfuture-stockfuture-adjcost
+        if (consumpt.le.0) then
+           value=-1e20
+        else
+           value = util(consumpt)+beta*Evalue(bondfuture,stockfuture)
+        endif
+        valuearray(j,i)=value   
+     enddo
+  enddo
+
+  print*,'bond now=',bondnow,';    stocknow=',stocknow
+  print*,'maximum value = ', maxval(valuearray)
+  
+  location=maxloc(valuearray)
+  j=location(1)
+  i=location(2)
+  print*,'optimal chocie of future bond =',assetB(j)
+  print*,'optimal choice of future stock=',assetA(i)
+
+        
+ call cpu_time(stop_time)
+ write(*,*) 'elapse time=', stop_time - start_time
+ stop
+
+end program main
