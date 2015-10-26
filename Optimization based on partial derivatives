@@ -1,0 +1,404 @@
+module test_valuefunc
+  implicit none
+  integer, parameter :: singlep = kind(1.0), doublep = kind(1.0d0)
+  integer, parameter :: fp = doublep
+  real(fp) :: rb=1.045, ralo=0.9, rahi=1.22
+  real(fp) :: Plo=0.5, phi=0.50
+  real(fp),parameter :: beta=0.996, gamma=2.591, theta=0.5
+  real(fp),parameter :: theta11=1-1/theta
+  integer, parameter :: nA=300,  nB=300
+  real(fp), parameter :: Amin=0.0, Amax=20.0, Bmin=0.0,  Bmax=20.0
+  real(fp), parameter :: entrycost=0.01, adjcost=0.0
+  real(fp) :: assetA(nA), assetB(nB), assetA_now,assetB_now,income
+  real(fp) :: alpha0, alpha1
+  real(fp) :: beta0, beta1
+
+ 
+contains
+  function Evalue(bondfuture,stockfuture)  !expected value
+    implicit none
+    real(fp), intent(in) :: bondfuture, stockfuture
+    real(fp) :: Vfunc(nB,nA),incomeT,consumpt
+    real(fp) :: valuelo,valuehi,Evalue
+    integer  :: j,i
+    incomeT=1.0
+    do j=1,nB
+       do i=1,nA
+          consumpt=incomeT+assetB(j)+assetA(i)
+          Vfunc(j,i)=consumpt**(1.0-gamma)/(1.0-gamma)
+       enddo
+    enddo
+    call interp2D(bondfuture*rb,stockfuture*ralo,valuelo,&
+         assetB,AssetA,Vfunc(:,:),nB,nA)    
+    call interp2D(bondfuture*rb,stockfuture*rahi,valuehi,&
+         assetB,AssetA,Vfunc(:,:),nB,nA)    
+    Evalue = plo*valuelo + phi*valuehi   !expected value
+  end function Evalue
+
+  function ERvalue(bondfuture,stockfuture)  ! E( Ra*v(Rb*b,Ra*a)  )
+    implicit none
+    real(fp), intent(in) :: bondfuture, stockfuture
+    real(fp) :: Vfunc(nB,nA),incomeT,consumpt
+    real(fp) :: valuelo,valuehi,ERvalue
+    integer  :: j,i
+    incomeT=1.0
+    do j=1,nB
+       do i=1,nA
+          consumpt=incomeT+assetB(j)+assetA(i)
+          Vfunc(j,i)=consumpt**(1.0-gamma)/(1.0-gamma)
+       enddo
+    enddo
+    call interp2D(bondfuture*rb,stockfuture*ralo,valuelo,&
+         assetB,AssetA,Vfunc(:,:),nB,nA)    
+    call interp2D(bondfuture*rb,stockfuture*rahi,valuehi,&
+         assetB,AssetA,Vfunc(:,:),nB,nA)    
+    ERvalue = plo*ralo*valuelo + phi*rahi*valuehi   !expected value
+  end function ERvalue
+
+  function valuefunc(bondfuture,stockfuture)
+    implicit none
+    real(fp),intent(in) :: bondfuture,stockfuture
+    real(fp):: valuefunc,consumpt
+    consumpt = income+assetB_now+assetA_now-bondfuture-stockfuture-adjcost
+    if (consumpt.le.0) then
+       valuefunc=-1e20
+    else
+       valuefunc = consumpt**(1.0-gamma)/(1.00-gamma)+beta*Evalue(bondfuture,stockfuture)
+    endif  
+  end function valuefunc
+
+  subroutine FOC2search(startpt,newpt,it,itmax,stride,tol,newval,nasset,otherinfo)
+    implicit none
+    ! search for optimal point based on first-order condition
+    ! startpt should be interior in the stock-bond space   
+    real(fp):: startpt(2),newpt(2), newval
+    integer::  it, itmax,ib,ia,nasset
+    real(fp):: consumpt, bond,stock,marginU,bondnow,stocknow
+    real(fp):: partb,parta,otherinfo(2,7),dbond,dstock,dVb,dVa,dUc
+    real(fp):: tanVb_b,tanUc_b,tanVa_a,tanUC_a,deltaA,deltaB
+    real(fp):: blo,bhi,alo,ahi,v1,v2,v3,v4,tol,stride
+
+    bond = startpt(1)
+    stock = startpt(2)
+    bondnow=assetB_now; stocknow=assetA_now
+    consumpt = income+bondnow+stocknow-bond-stock  
+                           !hadjcost and adjcost are included in income
+    if (consumpt<0.001) then
+       newpt(1)=startpt(1)-0.05*abs(startpt(1))
+       if (nasset==2) then
+          newpt(2)=startpt(2)-0.05*abs(startpt(2))
+       endif
+       newval = -99000000000
+       it = 0
+       return
+    endif
+    newval = consumpt**(1.0-gamma)/(1.0-gamma)+beta*Evalue(bond,stock)
+    ib = floor(1.0/beta1*log(beta0+bond))
+    ia = floor(1.0/alpha1*log(alpha0+stock))
+    if (ib.le.1) then
+       ib=1; bond=Bmin
+    endif
+    if (ib.ge.nB) then
+       ib=nB-1; bond=Bmax
+    endif
+    if (ia.le.1) then
+       ia=1; stock=Amin
+    endif
+    if (ia.ge.nA) then
+       ia=nA-1; stock=Amax
+    endif
+    
+    blo = assetB(ib)
+    bhi = assetb(ib+1)
+    if (nasset==2) then
+       alo = assetA(ia)
+       ahi = assetA(ia+1)
+       v1 = Evalue(bond,alo)
+       v2 = Evalue(bond,ahi)
+       if (v2.le.v1) then
+          if (ia+1<nA) then
+             ahi=assetA(ia+2)
+             v2 = Evalue(bond,ahi)!ERvalue(bond,ahi)
+          else
+             alo=assetA(ia-1)
+             v1 = Evalue(bond,alo)!ERvalue(bond,alo)
+          endif
+       endif
+       parta = beta*(v2-v1)/(ahi-alo)
+    endif
+    v3 = Evalue(blo,stock)
+    v4 = Evalue(bhi,stock)
+    if (v4.le.v3) then
+       if (ib+1<nB) then
+          bhi=assetB(ib+2)
+          v4=Evalue(bhi,stock)
+       else 
+          blo=assetB(ib-1)
+          v3 = Evalue(blo,stock)
+       endif
+    endif
+    partb=beta*(v4-v3)/(bhi-blo)!beta*Rb*(v4-v3)/(bhi-blo)
+    marginU = consumpt**(-gamma)
+
+
+! otherinfo: (/bond,stock,partb,parta,marginU,deltaB,deltaA/)
+    otherinfo(1,:)=otherinfo(2,:)
+    otherinfo(2,1:5)=(/bond,stock,partb,parta,marginU/)
+    dbond=otherinfo(2,1)-otherinfo(1,1)
+    dstock=otherinfo(2,2)-otherinfo(1,2)
+    dVb = otherinfo(2,3)-otherinfo(1,3)
+    dVa = otherinfo(2,4)-otherinfo(1,4)
+    dUc = otherinfo(2,5)-otherinfo(1,5)
+    if (dbond.ne.0) then
+       tanVb_b = dVb/dbond
+       tanUc_b = dUc/dbond
+       deltaB=abs(marginU-partb)/(abs(tanUc_b)+abs(tanVb_b))
+       otherinfo(2,6)=deltaB !update deltaB in otherinfo array
+    else
+       deltaB=otherinfo(2,6) !take deltaB from previous iteration
+    endif
+    if (dstock.ne.0) then
+       tanVa_a = Dva/dstock
+       tanUc_a = dUc/dstock
+       deltaA=abs(marginU-parta)/(abs(tanUc_a)+abs(tanVa_a))
+       otherinfo(2,7)=deltaA
+    else
+       deltaA=otherinfo(2,7)
+    endif
+
+! First two iterations
+! find how responsive are the derivatives to asset changs
+    if (it<3) then
+       if (ib.le.nB/2) then
+          newpt(1)=assetB(ib+2)
+       else
+          newpt(1)=assetB(ib-2)
+       endif
+       if (nasset==1) then
+          newpt(2)=stock
+       elseif (nasset==2) then
+          if (ia.le.nA/2) then
+             newpt(2)=assetA(ia+2)
+          else
+             newpt(2)=assetA(ia-2)
+          endif
+       endif
+       return
+    endif
+
+    if (ib.le.1.and.ia.le.1.) then
+       newpt(1)=Bmin;  newpt(2)=Amin
+       it=itmax; return
+    endif
+    if (ib.ge.nB.and.ia.ge.nA) then
+       newpt(1)=Bmax;  newpt(2)=Amax
+       it=itmax; return
+    endif
+    if (ib.le.1.and.ia.ge.nA) then
+       newpt(1)=Bmin;  newpt(2)=Amax
+       it=itmax; return
+    endif
+    if (ib.ge.nB.and.ia.le.nA) then
+       newpt(1)=Bmax;  newpt(2)=Amin
+       it=itmax; return
+    endif
+    if (ib.le.1.and.nasset==1) then
+       newpt(1)=Bmin;   newpt(2)=stock
+       it=itmax; return
+    endif
+    if (ib.ge.nB.and.nasset==1) then
+       newpt(1)=Bmax;    newpt(2)=stock
+       it=itmax; return
+    endif
+
+    
+    if (partb<marginU) then
+       newpt(1) = bond-stride*deltaB
+    else
+       newpt(1) = bond+stride*deltaB
+    endif
+
+    print*,'it=',it    
+    print*,'bond change=',stride*deltaB
+    if (nasset==2) then
+       if (parta<marginU) then
+          newpt(2) = stock-stride*deltaA
+       else
+          newpt(2) = stock+stride*deltaA
+       endif
+       print*,'stock change=',stride*deltaA
+       if (stock.le.Amin.or.stock.ge.Amax) then    !stock at corner
+          newpt(2)=stock
+       elseif (bond.le.Bmin.or.bond.ge.Bmax) then  !bond at corner
+          newpt(1)=bond
+       else
+          
+          if (parta>partb.and.partb>marginU) then       !parta>partb>marginU
+             newpt(1)=bond
+          elseif (partb>parta.and.parta>marginU) then   !partb>parta>marginU
+             newpt(2)=stock
+          elseif (marginU>parta.and.parta>partb) then   !marginU>parta>partb
+             newpt(2)=stock
+          elseif (marginU>partb.and.partb>parta) then   !marginU>partb>parta
+             newpt(1)=bond
+          endif
+       endif
+       if (abs(parta-marginU)+abs(partb-marginU)<tol) then
+          newpt=(/bond,stock/)
+          it=itmax
+       elseif (bond.ge.Bmax.and.abs(parta-marginU)<2.0*tol) then
+          newpt=(/Bmax,stock/)
+          it=itmax   
+       elseif (bond.le.Bmin.and.abs(parta-marginU)<2.0*tol) then
+          newpt=(/Bmin,stock/)
+          it=itmax 
+       elseif (stock.ge.Amax.and.abs(partb-marginU)<2.0*tol) then
+          newpt=(/bond,Amax/)
+          it=itmax
+       elseif (stock.le.Amin.and.abs(partb-marginU)<2.0*tol) then
+          newpt=(/bond,Amin/)
+          it=itmax
+       endif
+    elseif (nasset==1) then
+       newpt(2) = stock
+       if (bond.le.Bmin.or.bond.ge.Bmax) then 
+          newpt(1)=bond; it=itmax
+       elseif (abs(partb-marginU)<tol) then
+          newpt(1)=bond; it=itmax
+       endif
+    endif
+
+!    print*,'                          '
+    print*,'**************  partials and value :'
+    write(*,'(10f12.6)') (/partb,parta,marginU,newval/)
+    print*,'oldpt=',startpt
+    print*,'newpt=',newpt
+    print*,'otherinfo='
+  end subroutine FOC2search
+
+
+
+  subroutine set_grid(gmin, gmax, ng, grid, alpha0, alpha1)
+    implicit none
+    real(fp), intent(in) :: gmin, gmax
+    integer, intent(in) :: ng
+    real(fp), intent(out):: alpha0, alpha1, grid(ng)
+    integer:: i
+    alpha1 = (log(gmax - gmin + 1.0))/ng;
+    alpha0 = exp(alpha1) - gmin;
+    do i = 1, ng
+       grid(i) = -alpha0 + exp(alpha1*i);
+    end do
+    grid(1) = gmin;
+    grid(ng) = gmax;
+    return
+  end subroutine set_grid
+
+
+  
+  subroutine interp2D(xinp0, yinp0,zinp, xgrid, ygrid,zfunc, nx,ny)
+    implicit none
+    !*************************************************************************************
+    ! Piecewise liner interpolation.
+    ! Given input arrays xgrid,ygrid (independent variable) and zfunc (dependent variable),
+    ! both of dimension narray, this routine finds, by linear interpolation, 
+    ! the value of zinp(x=xinp,y=yinp). 
+    ! Array xgrid and ygrid  must be in ascending order.
+    !***************************************************************************************
+    real(fp), intent(out) :: zinp
+    real(fp), intent(in) :: xinp0,yinp0
+    integer, intent(in) :: nx,ny
+    real(fp), intent(in) :: xgrid(nx)
+    real(fp), intent(in) :: ygrid(ny)
+    real(fp), intent(in) :: zfunc(nx,ny)
+    real(fp) :: value_on_grid(4), wgt(4), area,xinp,yinp
+    integer :: i,idx,idy
+
+    idx = floor(1.0/beta1*log(beta0+xinp0))
+    idy = floor(1.0/alpha1*log(alpha0+yinp0))
+    if (idx<1) then
+       xinp=xgrid(1); idx=1
+    elseif (idx.ge.nx) then
+       xinp=xgrid(nx); idx=nx-1
+    else
+       xinp=xinp0
+    endif
+    if (idy<1) then
+       yinp=ygrid(1);  idy=1
+    elseif (idy.ge.ny) then
+       yinp=ygrid(ny); idy=ny-1
+    else
+       yinp=yinp0
+    endif
+    area = (xgrid(idx+1)-xgrid(idx))*(ygrid(idy+1)-ygrid(idy))
+    value_on_grid(1) = zfunc(idx,idy)   
+    value_on_grid(2) = zfunc(idx,idy+1) 
+    value_on_grid(3) = zfunc(idx+1,idy) 
+    value_on_grid(4) = zfunc(idx+1,idy+1)
+    wgt(1) = (xgrid(idx+1)-xinp)*(ygrid(idy+1)-yinp)/area
+    wgt(2) = (xgrid(idx+1)-xinp)*(yinp-ygrid(idy))/area
+    wgt(3) = (xinp-xgrid(idx))*(ygrid(idy+1)-yinp)/area
+    wgt(4) = (xinp-xgrid(idx))*(yinp-ygrid(idy))/area
+    zinp = wgt(1)*value_on_grid(1) + wgt(2)*value_on_grid(2) &   
+         + wgt(3)*value_on_grid(3) + wgt(4)*value_on_grid(4)
+    return
+  end subroutine interp2D
+
+end module test_valuefunc
+
+
+program main
+  use test_valuefunc
+  real(fp) :: bondfuture, stockfuture
+  real(fp) :: valuearray(nB,nA),newval
+  real(fp) :: startpt(2),newpt(2),tol,otherinfo(2,7)
+  integer  :: i, j, it,itmax,location(2),nasset
+  real(fp) :: start_time, stop_time, stride
+  call cpu_time(start_time)
+
+! set up grids
+  call set_grid(Amin, Amax, nA, assetA, alpha0, alpha1)
+  call set_grid(Bmin, Bmax, nB, assetB, beta0, beta1)
+
+! bondholding now (between Bmin=0 and Bmax=20)
+  assetB_now = 5.0
+! stockholding now (between Amin=0 and Amax=20)
+  assetA_now = 5.0
+  
+  income=1.0        
+
+    do j=1,nB
+       do i=1,nA
+          bondfuture=assetB(j);
+          stockfuture=assetA(i)
+          valuearray(j,i)=valuefunc(bondfuture,stockfuture)
+       enddo
+    enddo
+    print*,'***********maximum value = ', maxval(valuearray)  
+    location=maxloc(valuearray)
+    j=location(1)
+    i=location(2)
+    print*,'asset =',(/assetB(j),assetA(i)/)
+
+
+  startpt(1) = 0.0 !assetB(j)
+  startpt(2) = 0.0 !assetA(i)
+
+    tol=0.00001
+    stride=0.99
+    it=1; itmax=50; otherinfo=0; nasset=1;
+    do while (it<itmax) 
+       call FOC2search(startpt,newpt,it,itmax,stride,tol,newval,nasset,otherinfo)
+       startpt=newpt
+       it=it+1
+    enddo
+
+    print*,'*** it=',it,'  newval=',newval
+    print*,'newpt=',newpt
+
+        
+ call cpu_time(stop_time)
+ write(*,*) 'elapse time=', stop_time - start_time
+ stop
+
+end program main
